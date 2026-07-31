@@ -1,0 +1,6 @@
+[server]
+# The map + GEE tiles need a comfortable upload/message size.
+maxMessageSize = 300
+
+[theme]
+base = "light"
