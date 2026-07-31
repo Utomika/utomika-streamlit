@@ -10,6 +10,7 @@ Secrets:       see .streamlit/secrets.toml.example
 
 import calendar
 import io
+import os
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -20,6 +21,11 @@ from streamlit_folium import st_folium
 import gee_common as gc
 import gee_app
 import db
+
+# Resolve data files relative to this script, not the process CWD — so the app
+# works regardless of where Streamlit Cloud runs it from.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DATA = os.path.join(_HERE, "data")
 
 st.set_page_config(page_title="UTOMIKA cloud labeling", layout="wide")
 
@@ -88,7 +94,7 @@ def _supabase():
 @st.cache_data(show_spinner=False)
 def _load_catalog(city):
     """Load and lightly type the per-city cloud-cover catalog."""
-    df = pd.read_csv(f"data/cloud_cover_{city}.csv")
+    df = pd.read_csv(os.path.join(_DATA, f"cloud_cover_{city}.csv"))
     df["date"] = pd.to_datetime(df["date"]).dt.date
     idx = pd.DatetimeIndex(df["date"])
     df["year"] = idx.year
