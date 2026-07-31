@@ -352,6 +352,39 @@ def _get_labeled(city, labeler):
     return db.get_labeled_ids(_supabase(), city, labeler=labeler)
 
 
+def _export_df(client, labeler):
+    """One labeler's labels (all cities), enriched with catalog-only columns.
+
+    The `labels` table stores sat/scene_cloud_cover/roi_cloud_pct, but not
+    tier, roi_valid_pct, or the WRS scene coordinates — those live only in the
+    per-city catalog CSVs. Left-merge them on (city, image_id) so the export
+    carries every field a scene can have. Returns None if the labeler has none.
+    """
+    rows = db.fetch_labels(client, labeler=labeler)
+    if not rows:
+        return None
+    labels = pd.DataFrame(rows)
+
+    extra = ["image_id", "tier", "roi_valid_pct",
+             "wrs_path", "wrs_row", "scene_cloud_cover_land"]
+    cats = []
+    for city in CITIES.values():
+        c = _load_catalog(city)[extra].copy()
+        c["city"] = city
+        cats.append(c)
+    catalog = pd.concat(cats, ignore_index=True)
+
+    merged = labels.merge(catalog, on=["city", "image_id"], how="left")
+
+    # Human-first column order; drop the internal `id`. Keep only present cols.
+    cols = ["city", "image_date", "sat", "tier", "image_id",
+            "wrs_path", "wrs_row",
+            "scene_cloud_cover", "scene_cloud_cover_land",
+            "roi_valid_pct", "roi_cloud_pct",
+            "label", "notes", "labeler", "created_at", "updated_at"]
+    return merged[[c for c in cols if c in merged.columns]]
+
+
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
@@ -435,17 +468,17 @@ def main():
         _label_controls(client, city, row, view, labeled)
 
     # Export
-    with st.sidebar.expander("Export labels"):
-        if st.button("Load all labels as CSV"):
-            rows = db.fetch_labels(client)
-            if rows:
-                csv = pd.DataFrame(rows).to_csv(index=False)
+    with st.sidebar.expander("Export my labels"):
+        if st.button("Load my labels as CSV"):
+            export = _export_df(client, st.session_state["labeler"])
+            if export is not None:
                 st.download_button(
-                    "Download labels.csv", data=csv,
-                    file_name="labels.csv", mime="text/csv",
+                    "Download labels.csv",
+                    data=export.to_csv(index=False),
+                    file_name="utomika_labels.csv", mime="text/csv",
                 )
             else:
-                st.caption("No labels yet.")
+                st.caption("You haven't labeled any scenes yet.")
 
 
 if __name__ == "__main__":

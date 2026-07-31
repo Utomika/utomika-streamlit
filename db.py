@@ -73,11 +73,13 @@ def upsert_label(
     )
 
 
-def fetch_labels(client, city=None):
-    """Return all labels (optionally one city) ordered by creation time."""
+def fetch_labels(client, city=None, labeler=None):
+    """Return all labels (optionally one city and/or labeler) ordered by creation time."""
     query = client.table("labels").select("*").order("created_at")
     if city:
         query = query.eq("city", city)
+    if labeler:
+        query = query.eq("labeler", labeler)
     return query.execute().data or []
 
 
