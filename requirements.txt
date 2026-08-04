@@ -1,9 +1,10 @@
 # UTOMIKA cloud-labeling Streamlit app.
 # Deliberately light: no geopandas/geemap on the server — ROIs ship as GeoJSON
 # and map layers are plain folium TileLayers over GEE getMapId URLs.
-streamlit>=1.36
+streamlit>=1.37
 streamlit-folium>=0.20
 folium>=0.16
+altair>=5,<6
 earthengine-api>=1.1
 supabase>=2.4
 pandas>=2.0

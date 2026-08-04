@@ -18,6 +18,11 @@ each).
 - **Main panel** — an interactive map of the selected overpass with toggleable
   **True color**, **Cloud/shadow mask**, **NDVI**, **LST (°C)**, and **ECI**
   layers (live GEE tiles), plus the ROI cloud numbers for cross-checking.
+- **Historical station weather** — a compact strip above the scene metrics and
+  map with daily mean air temperature, precipitation, and wind observations at
+  07:00, 14:00, and 21:00. Choose 7, 14, 21, 28, or 35 days before the selected
+  scene; arrow controls scroll that window into the past without rebuilding the
+  map.
 - **Label buttons** — Clear / Cloudy / Unsure (+ optional note) → upsert to
   Supabase and auto-advance to the next unlabeled scene.
 - **Export** — pull the whole `labels` table as CSV from the sidebar.
@@ -26,6 +31,7 @@ each).
 
 ```
 app.py               Streamlit UI (login, sidebar list, map, label buttons)
+weather.py           Cached station data, windowing, and Altair chart
 gee_app.py           EE glue: service-account auth, GeoJSON ROI, exact-scene
                      loader, NDVI/ECI, tile-layer URLs
 gee_common.py        COPIED from ../scripts (geopandas imports made lazy)
@@ -34,6 +40,8 @@ export_rois.py       one-off: shapefile -> data/{city}.geojson
 supabase_schema.sql  the labels table
 data/
   cloud_cover_zagreb.csv, cloud_cover_split.csv   catalogs (copied)
+  sve_postaje_temperatura_oborine.csv             daily station weather
+  sve_postaje_vjetar_tlo.csv                      wind at 07/14/21
   zagreb.geojson, split.geojson                   ROIs (pre-exported)
 requirements.txt
 .streamlit/secrets.toml.example                   copy to secrets.toml
@@ -119,7 +127,14 @@ They use the identical dissolve + 50 m simplify + WGS84 logic as
   scene — fine for visual review.
 - **Map framework:** plain `folium` + `streamlit-folium` over GEE `getMapId`
   tile URLs (no geemap/geopandas), keeping the Streamlit Cloud build light.
+- **Weather coverage:** the bundled station observations run from 1991-01-01
+  through 2024-12-31. Split uses Marjan; Zagreb defaults to Grič and can switch
+  to Maksimir or Pleso. The history selector defaults to seven days before the
+  scene and includes the selected scene date itself. The red line is daily mean
+  air temperature (`SredT`), while daily minimum and maximum remain available
+  in its tooltip. Temperature and 24-hour precipitation records carry the
+  source's 21:00 timestamp; they are not instantaneous 21:00 air-temperature
+  readings. Missing precipitation stays missing and is never converted to zero.
 - **Rerun jank:** Streamlit reruns the whole script per interaction, so the map
-  can feel slightly janky; acceptable for a review-one-date-at-a-time tool. If
-  it becomes annoying, Solara is a drop-in upgrade (same `gee_common.py`, same
-  Supabase `db.py`).
+  can feel slightly janky; weather controls are isolated in a fragment so they
+  update without rebuilding the Folium/GEE map.
