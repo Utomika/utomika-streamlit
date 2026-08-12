@@ -17,7 +17,8 @@ each).
   "hide already-labeled"; scroll the catalog. A `✓` marks scenes you've labeled.
 - **Main panel** — an interactive map of the selected overpass with toggleable
   **True color**, **Cloud/shadow mask**, **NDVI**, **LST (°C)**, and **ECI**
-  layers (live GEE tiles), plus the ROI cloud numbers for cross-checking.
+  layers (live GEE tiles), plus the ROI cloud numbers for cross-checking. True
+  color renders first; the remaining layers become available progressively.
 - **Historical station weather** — a compact strip above the scene metrics and
   map with daily mean air temperature, precipitation, and wind observations at
   07:00, 14:00, and 21:00. Choose 7, 14, 21, 28, or 35 days before the selected
@@ -92,8 +93,9 @@ streamlit run app.py
 ```
 
 Then: log in → pick a city → the sidebar shows ~2.4k dated rows → select a date
-→ the map paints true-color + cloud mask (NDVI/LST/ECI on toggle) → click a
-label → it saves to Supabase and marks the row `✓`.
+→ the map paints true color first, then adds cloud mask, NDVI, LST, and ECI to
+the layer menu one by one → click a label → it saves to Supabase and marks the
+row `✓`.
 
 ## Regenerating the ROIs
 

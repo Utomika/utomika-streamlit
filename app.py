@@ -13,7 +13,7 @@ import streamlit as st
 from components.export import render_export
 from components.labeling import label_controls
 from components.login import login_gate
-from components.map_view import render_map
+from components.map_view import render_live_cloud_stats, render_progressive_map
 from components.sidebar import render_sidebar
 from components.weather_panel import weather_panel
 from config import CITIES
@@ -95,25 +95,17 @@ def main():
     meta[2].metric("ROI valid %", f"{row['roi_valid_pct']:.0f}")
     meta[3].metric("Tier", row["tier"])
 
+    left, right = st.columns([3, 1])
     try:
-        tiles, numbers = resources.scene_tiles(
-            city, active_id, row["sat"], row["tier"]
-        )
+        with left:
+            render_progressive_map(city, row)
     except Exception as e:  # noqa: BLE001
-        st.error(f"Could not load this scene from Earth Engine:\n\n{e}")
+        with left:
+            st.error(f"Could not load this scene from Earth Engine:\n\n{e}")
         return
 
-    left, right = st.columns([3, 1])
-    with left:
-        render_map(city, row, tiles)
     with right:
-        st.markdown("**Live ROI cloud (from map)**")
-        st.write(f"cloud (of city): **{numbers['roi_cloud_pct']}%**")
-        st.write(f"cloud (of valid): **{numbers['roi_cloud_of_valid_pct']}%**")
-        st.write(f"valid pixels: **{numbers['roi_valid_pct']}%**")
-        st.caption(
-            f"Cross-check: catalog roi_cloud_pct = {row['roi_cloud_pct']:.1f}%"
-        )
+        render_live_cloud_stats(city, row)
         st.divider()
         label_controls(client, city, row, view, labeled)
 

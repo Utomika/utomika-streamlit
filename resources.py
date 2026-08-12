@@ -96,36 +96,44 @@ def roi_view(city):
     return [lat, lon], city_roi.getInfo()
 
 
-# ttl bounds how long a cached tile-URL is reused: GEE getMapId tokens are
-# ephemeral, so without an expiry a scene revisited hours into a session could
-# serve a dead tile URL. 30 min keeps re-opening instant while refreshing tokens.
-@st.cache_data(show_spinner="Rendering scene tiles…", ttl=1800)
-def scene_tiles(city, image_id, sat, tier):
-    """Compute all layer tile-URLs + ROI cloud numbers for one scene.
+SCENE_TILE_TTL_SECONDS = 1800
 
-    Cached per (city, image_id) so re-opening a date is instant. Returns a dict
-    of {layer_name: xyz_url_template} plus the ROI cloud stats printed alongside.
-    """
+
+def _visualized_scene_layer(img, city_roi, layer):
+    """Build one visualized scene layer without evaluating the others."""
+    if layer == "true_color":
+        return gc.true_color(img).visualize(**gee_app.VIS["true_color"])
+    if layer == "cloud":
+        return (
+            gc.cloud_bits(img.select("QA_PIXEL"))
+            .selfMask().visualize(**gee_app.VIS["cloud"])
+        )
+    if layer == "ndvi":
+        return gee_app.ndvi(img).visualize(**gee_app.VIS["ndvi"])
+    if layer == "lst":
+        return gc.lst_celsius(img).visualize(**gee_app.VIS["lst"])
+    if layer == "eci":
+        return gee_app.eci(img, city_roi).visualize(**gee_app.VIS["eci"])
+    raise ValueError(f"Unknown scene layer: {layer}")
+
+
+# GEE getMapId tokens are ephemeral. Cache each URL independently so requesting
+# true color never constructs NDVI/LST/ECI, while a recently revisited layer is
+# still instant. The UI also discards its staged URLs after this same interval.
+@st.cache_data(show_spinner=False, ttl=SCENE_TILE_TTL_SECONDS)
+def scene_tile(city, image_id, sat, tier, layer):
+    """Return the XYZ URL template for exactly one scene layer."""
     city_roi = roi(city)
     img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
+    visualized = _visualized_scene_layer(img, city_roi, layer)
+    return gee_app.tile_layer_url(visualized, {})
 
-    true_color = gc.true_color(img).visualize(**gee_app.VIS["true_color"])
-    cloud = (
-        gc.cloud_bits(img.select("QA_PIXEL"))
-        .selfMask().visualize(**gee_app.VIS["cloud"])
-    )
-    ndvi = gee_app.ndvi(img).visualize(**gee_app.VIS["ndvi"])
-    lst = gc.lst_celsius(img).visualize(**gee_app.VIS["lst"])
-    eci = gee_app.eci(img, city_roi).visualize(**gee_app.VIS["eci"])
 
-    tiles = {
-        "True color": gee_app.tile_layer_url(true_color, {}),
-        "Cloud / shadow mask": gee_app.tile_layer_url(cloud, {}),
-        "NDVI": gee_app.tile_layer_url(ndvi, {}),
-        "LST (°C)": gee_app.tile_layer_url(lst, {}),
-        "ECI": gee_app.tile_layer_url(eci, {}),
-    }
-
+@st.cache_data(show_spinner=False)
+def scene_cloud_stats(city, image_id, sat, tier):
+    """Calculate stable live ROI cloud numbers independently of map tiles."""
+    city_roi = roi(city)
+    img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
     stats = gc.roi_cloud_stats(img, city_roi).getInfo()
     valid = stats.get("valid") or 0.0
     cloud_frac = stats.get("cloud") or 0.0
@@ -135,7 +143,7 @@ def scene_tiles(city, image_id, sat, tier):
         "roi_cloud_pct": round(cloud_frac * 100, 1),
         "roi_cloud_of_valid_pct": round(cloud_of_valid, 1),
     }
-    return tiles, numbers
+    return numbers
 
 
 @st.cache_data(show_spinner=False, ttl=30)
