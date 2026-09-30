@@ -1,4 +1,5 @@
 import os
+import urllib.request
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -127,6 +128,69 @@ def scene_tile(city, image_id, sat, tier, layer):
     img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
     visualized = _visualized_scene_layer(img, city_roi, layer)
     return gee_app.tile_layer_url(visualized, {})
+
+
+# Nodata written into raw float GeoTIFFs (clipped-out / masked pixels) and into
+# the raw cloud mask (uint8 can't hold -9999, so masked pixels become 255).
+RAW_NODATA_FLOAT = -9999
+RAW_NODATA_CLOUD = 255
+GEOTIFF_FETCH_TIMEOUT_SECONDS = 300
+
+
+def _raw_scene_layer(img, city_roi, layer):
+    """Build one layer as raw values (no palette), ready for export.
+
+    Mirrors _visualized_scene_layer. Float layers keep their physical units;
+    masked pixels are filled with -9999 so the GeoTIFF has no hidden gaps. The
+    cloud mask is uint8 (1 = cloud/shadow, 0 = clear, 255 = no data).
+    """
+    if layer == "cloud":
+        return (
+            gc.cloud_bits(img.select("QA_PIXEL"))
+            .unmask(RAW_NODATA_CLOUD).toByte()
+        )
+    if layer == "true_color":
+        raw = gc.true_color(img)
+    elif layer == "ndvi":
+        raw = gee_app.ndvi(img)
+    elif layer == "lst":
+        raw = gc.lst_celsius(img)
+    elif layer == "eci":
+        raw = gee_app.eci(img, city_roi)
+    else:
+        raise ValueError(f"Unknown scene layer: {layer}")
+    return raw.toFloat().unmask(RAW_NODATA_FLOAT)
+
+
+@st.cache_data(show_spinner=False, ttl=SCENE_TILE_TTL_SECONDS, max_entries=10)
+def scene_geotiff(city, image_id, sat, tier, layer, kind):
+    """Return GeoTIFF bytes for one scene layer over the city ROI.
+
+    ``kind`` is "raw" (physical values, see _raw_scene_layer) or "rgb" (the
+    palette-visualized 8-bit image exactly as painted on the map).
+    """
+    city_roi = roi(city)
+    img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
+    if kind == "raw":
+        image = _raw_scene_layer(img, city_roi, layer)
+    elif kind == "rgb":
+        image = _visualized_scene_layer(img, city_roi, layer)
+    else:
+        raise ValueError(f"Unknown GeoTIFF kind: {kind}")
+    # EPSG:32633 (UTM 33N) covers both Zagreb and Split and is the native
+    # Landsat grid there, so 30 m export needs no resampling. getDownloadURL
+    # has a request-size cap (~32 MB), which a single city ROI at 30 m stays
+    # well under; a larger region or finer scale would fail with an EE error.
+    url = image.getDownloadURL({
+        "region": city_roi,
+        "scale": 30,
+        "crs": "EPSG:32633",
+        "format": "GEO_TIFF",
+    })
+    with urllib.request.urlopen(
+        url, timeout=GEOTIFF_FETCH_TIMEOUT_SECONDS
+    ) as resp:
+        return resp.read()
 
 
 @st.cache_data(show_spinner=False)

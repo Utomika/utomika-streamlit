@@ -13,8 +13,12 @@ each).
 
 - **Login gate** — one shared app password; each labeler types their name, which
   is stored with every label.
-- **Sidebar** — pick a city, filter by ROI cloud %, satellite, year, and
-  "hide already-labeled"; scroll the catalog. A `✓` marks scenes you've labeled.
+- **Sidebar** — pick a city, then filter by date range (From / Until), ROI
+  cloud %, satellite, year range, month, and "hide already-labeled"; all filters
+  combine, and the scene list below shows the matching dates, paginated. The
+  cloud % and year-range sliders each have typed inputs next to them, so you can
+  enter an exact value (e.g. 37 %, or 1998 to 2004) instead of dragging. A `✓`
+  marks scenes you've labeled.
 - **Main panel** — an interactive map of the selected overpass with toggleable
   **True color**, **Cloud/shadow mask**, **NDVI**, **LST (°C)**, and **ECI**
   layers (live GEE tiles), plus the ROI cloud numbers for cross-checking. True
@@ -26,12 +30,20 @@ each).
   map.
 - **Label buttons** — Clear / Cloudy / Unsure (+ optional note) → upsert to
   Supabase and auto-advance to the next unlabeled scene.
+- **GeoTIFF export** — under the ROI cloud numbers, "Download GeoTIFF" prepares
+  any layer (true color, cloud mask, NDVI, LST, ECI) of the selected scene as
+  either **raw values** (nodata -9999; cloud mask 0/1 with nodata 255) or a
+  **colored** 8-bit RGB image as painted on the map. Files are 30 m, EPSG:32633
+  (UTM 33N), clipped to the city boundary. The map's camera button still saves a
+  PNG of the current view.
 - **Export** — pull the whole `labels` table as CSV from the sidebar.
 
 ## Layout
 
 ```
 app.py               Streamlit UI (login, sidebar list, map, label buttons)
+components/          UI pieces: login, sidebar filters, map, labeling, weather,
+                     GeoTIFF + CSV export
 weather.py           Cached station data, windowing, and Altair chart
 gee_app.py           EE glue: service-account auth, GeoJSON ROI, exact-scene
                      loader, NDVI/ECI, tile-layer URLs
@@ -44,6 +56,9 @@ data/
   sve_postaje_temperatura_oborine.csv             daily station weather
   sve_postaje_vjetar_tlo.csv                      wind at 07/14/21
   zagreb.geojson, split.geojson                   ROIs (pre-exported)
+assets/
+  utomika_icon.png                                favicon
+  utomika_logo.jpg                                full logo (login + sidebar)
 requirements.txt
 .streamlit/secrets.toml.example                   copy to secrets.toml
 ```

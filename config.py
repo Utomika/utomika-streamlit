@@ -5,6 +5,9 @@ import os
 # works regardless of where Streamlit Cloud runs it from.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(_HERE, "data")
+ASSETS_DIR = os.path.join(_HERE, "assets")
+LOGO_ICON = os.path.join(ASSETS_DIR, "utomika_icon.png")   # favicon
+LOGO_FULL = os.path.join(ASSETS_DIR, "utomika_logo.jpg")   # with wordmark
 
 # Scenes are shown in pages of this size in the sidebar radio, rather than one
 # flat list of every filtered row (thousands of options was the main render cost).

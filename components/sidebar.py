@@ -9,34 +9,6 @@ from config import PAGE_SIZE
 # --------------------------------------------------------------------------
 # Sidebar — city, filters, date list
 # --------------------------------------------------------------------------
-# Keys of the ordinary filter widgets. Popping these resets each widget to its
-# default on the next run — used when a date search takes over the catalog.
-_FILTER_KEYS = ("cloud_filter", "sat_filter", "year_filter",
-                "month_filter", "hide_labeled")
-
-
-@st.dialog("Apply date search?")
-def _confirm_date_search(d):
-    """Confirm that a date search should clear all other filters.
-
-    On Apply we drop the ordinary filter widgets' state (so they snap back to
-    defaults) and set a sticky "active_date"; _sidebar then shows only that
-    day's scene(s), ignoring the other filters, on page 1.
-    """
-    st.write(
-        f"This will clear your other filters and show only scene(s) on **{d}**.")
-    c1, c2 = st.columns(2)
-    if c1.button("Apply", type="primary", use_container_width=True):
-        for k in _FILTER_KEYS:
-            st.session_state.pop(k, None)
-        st.session_state["active_date"] = d
-        st.session_state["scene_page"] = 0
-        st.session_state.pop("scene_radio", None)
-        st.rerun()
-    if c2.button("Cancel", use_container_width=True):
-        st.rerun()
-
-
 def _step_page(delta, n_pages):
     """Prev/next page button callback — keeps scene_page and page_input in sync."""
     p = max(0, min(st.session_state.get("scene_page", 0) + delta, n_pages - 1))
@@ -49,73 +21,164 @@ def _page_input_changed():
     st.session_state["scene_page"] = int(st.session_state["page_input"]) - 1
 
 
+def _sync_cloud_from_slider():
+    """Cloud slider callback — mirror its value into the typed-input box."""
+    st.session_state["cloud_filter_num"] = st.session_state["cloud_filter"]
+
+
+def _sync_cloud_from_number():
+    """Cloud number-input callback — move the slider to the typed value."""
+    value = st.session_state["cloud_filter_num"]
+    if value is not None:
+        st.session_state["cloud_filter"] = int(value)
+
+
+def _sync_year_from_slider():
+    """Year-range slider callback — mirror both ends into the typed inputs."""
+    lo, hi = st.session_state["year_filter"]
+    st.session_state["year_from_num"] = lo
+    st.session_state["year_to_num"] = hi
+
+
+def _sync_year_from_number(edited):
+    """Typed-year callback ("from" or "to") — write the slider tuple.
+
+    Keeps from <= to by dragging the *other* end along: a "from" typed past "to"
+    pulls "to" up to match, and a "to" typed below "from" pushes "from" down.
+    """
+    lo = st.session_state["year_from_num"]
+    hi = st.session_state["year_to_num"]
+    if lo is None or hi is None:
+        return
+    lo, hi = int(lo), int(hi)
+    if edited == "from":
+        hi = max(hi, lo)
+    else:
+        lo = min(lo, hi)
+    st.session_state["year_filter"] = (lo, hi)
+    st.session_state["year_from_num"] = lo
+    st.session_state["year_to_num"] = hi
+
+
+def _date_from_changed():
+    """'From' date callback — 'Until' can never end up before it."""
+    if st.session_state["date_until"] < st.session_state["date_from"]:
+        st.session_state["date_until"] = st.session_state["date_from"]
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(value, hi))
+
+
+def _init_filter_state(date_min, date_max, years):
+    """Seed/repair the synced filter widgets' session keys before they're built.
+
+    Widgets with a pre-set key must not also receive ``value=`` (Streamlit warns),
+    so defaults live here. Stored values are also clamped into the *current*
+    catalog's bounds, since a city switch changes the date span and year range
+    and a stored value outside ``min_value``/``max_value`` makes Streamlit raise.
+    The sliders are the source of truth; the typed boxes just mirror them.
+    """
+    ss = st.session_state
+
+    cloud = ss.get("cloud_filter")
+    cloud = 100 if cloud is None else _clamp(int(cloud), 0, 100)
+    ss["cloud_filter"] = cloud
+    ss["cloud_filter_num"] = cloud
+
+    lo, hi = ss.get("year_filter") or (years[0], years[-1])
+    lo = _clamp(int(lo), years[0], years[-1])
+    hi = _clamp(int(hi), lo, years[-1])
+    ss["year_filter"] = (lo, hi)
+    ss["year_from_num"] = lo
+    ss["year_to_num"] = hi
+
+    d_from = ss.get("date_from") or date_min
+    d_from = _clamp(d_from, date_min, date_max)
+    d_until = ss.get("date_until") or date_max
+    d_until = _clamp(d_until, d_from, date_max)
+    ss["date_from"] = d_from
+    ss["date_until"] = d_until
+
+
 def render_sidebar(df, labeled):
     st.sidebar.header("Catalog")
     st.sidebar.write(f"Labeler: **{st.session_state['labeler']}**")
     if st.sidebar.button("Log out"):
         for k in ("authed", "labeler", "scene_radio", "pending_scene",
-                  "scene_page", "active_date"):
+                  "scene_page", "date_from", "date_until"):
             st.session_state.pop(k, None)
         st.rerun()
 
-    # Date search — jumps straight to a scene's date. It overrides all other
-    # filters (after a confirmation modal), so while a date is active we hide the
-    # ordinary filters and show only that day's scene(s).
-    active_date = st.session_state.get("active_date")
-    if active_date is not None:
-        st.sidebar.info(f"Date filter: **{active_date}**")
-        if st.sidebar.button("Clear date filter", use_container_width=True):
-            st.session_state.pop("active_date", None)
-            st.session_state["scene_page"] = 0
-            st.rerun()
-        view = df[df["date"] == active_date].copy()
-    else:
-        # Span the whole catalog: st.date_input otherwise caps the year picker at
-        # ~10 years back, hiding the pre-2016 scenes.
-        search_date = st.sidebar.date_input(
-            "Search date", value=None,
-            min_value=df["date"].min(), max_value=df["date"].max(),
-            key="date_search")
-        if st.sidebar.button("Search", use_container_width=True):
-            if search_date is None:
-                st.sidebar.warning("Pick a date to search.")
-            elif (df["date"] == search_date).any():
-                _confirm_date_search(search_date)
-            else:
-                st.sidebar.error(f"No scene exists on {search_date}.")
+    # Filters. Every filter is ordinary and combines with the others, including
+    # the date range.
+    date_min, date_max = df["date"].min(), df["date"].max()
+    years = sorted(int(y) for y in df["year"].unique())
+    _init_filter_state(date_min, date_max, years)
 
-        # Filters
-        max_cloud = st.sidebar.slider(
-            "Max ROI cloud %", 0, 100, 100, step=5, key="cloud_filter")
-        sats = sorted(df["sat"].dropna().unique())
-        sat_sel = st.sidebar.multiselect(
-            "Satellite", sats, default=sats, key="sat_filter")
-        years = sorted(df["year"].unique())
-        yr = st.sidebar.select_slider(
-            "Year range", options=years, value=(years[0], years[-1]),
-            key="year_filter")
-        months = list(range(1, 13))
-        mo_sel = st.sidebar.multiselect(
-            "Months", months, default=months,
-            format_func=lambda m: calendar.month_abbr[m], key="month_filter")
-        hide_labeled = st.sidebar.checkbox(
-            "Hide already-labeled", value=False, key="hide_labeled")
+    # Span the whole catalog: st.date_input otherwise caps the year picker at
+    # ~10 years back, hiding the pre-2016 scenes. "Until" can't precede "From"
+    # (min_value), and _date_from_changed bumps it when "From" jumps past it.
+    dcols = st.sidebar.columns(2)
+    dcols[0].date_input(
+        "From", min_value=date_min, max_value=date_max,
+        key="date_from", on_change=_date_from_changed)
+    dcols[1].date_input(
+        "Until", min_value=st.session_state["date_from"], max_value=date_max,
+        key="date_until")
 
-        # NaN roi_cloud_pct (scenes with no valid pixels) must stay visible, not
-        # be silently dropped by the `<=` comparison (NaN <= x is always False).
-        cloud_ok = df["roi_cloud_pct"].isna() | (df["roi_cloud_pct"] <= max_cloud)
-        view = df[
-            cloud_ok
-            & (df["sat"].isin(sat_sel))
-            & (df["year"] >= yr[0])
-            & (df["year"] <= yr[1])
-            & (df["month"].isin(mo_sel))
-        ].copy()
-        if hide_labeled:
-            view = view[~view["image_id"].isin(labeled)]
+    # Each slider pairs with a typed box; callbacks keep the two in sync.
+    st.sidebar.slider(
+        "Max ROI cloud %", 0, 100, step=1, key="cloud_filter",
+        on_change=_sync_cloud_from_slider)
+    st.sidebar.number_input(
+        "Max ROI cloud % (type a value)", min_value=0, max_value=100, step=1,
+        key="cloud_filter_num", on_change=_sync_cloud_from_number,
+        label_visibility="collapsed")
+    max_cloud = st.session_state["cloud_filter"]
+
+    sats = sorted(df["sat"].dropna().unique())
+    sat_sel = st.sidebar.multiselect(
+        "Satellite", sats, default=sats, key="sat_filter")
+
+    st.sidebar.slider(
+        "Year range", min_value=years[0], max_value=years[-1],
+        key="year_filter", on_change=_sync_year_from_slider)
+    ycols = st.sidebar.columns(2)
+    ycols[0].number_input(
+        "From year", min_value=years[0], max_value=years[-1], step=1,
+        key="year_from_num", on_change=_sync_year_from_number, args=("from",))
+    ycols[1].number_input(
+        "To year", min_value=years[0], max_value=years[-1], step=1,
+        key="year_to_num", on_change=_sync_year_from_number, args=("to",))
+    yr = st.session_state["year_filter"]
+
+    months = list(range(1, 13))
+    mo_sel = st.sidebar.multiselect(
+        "Months", months, default=months,
+        format_func=lambda m: calendar.month_abbr[m], key="month_filter")
+    hide_labeled = st.sidebar.checkbox(
+        "Hide already-labeled", value=False, key="hide_labeled")
+
+    # NaN roi_cloud_pct (scenes with no valid pixels) must stay visible, not
+    # be silently dropped by the `<=` comparison (NaN <= x is always False).
+    cloud_ok = df["roi_cloud_pct"].isna() | (df["roi_cloud_pct"] <= max_cloud)
+    d_from, d_until = st.session_state["date_from"], st.session_state["date_until"]
+    view = df[
+        cloud_ok
+        & (df["sat"].isin(sat_sel))
+        & (df["year"] >= yr[0])
+        & (df["year"] <= yr[1])
+        & (df["month"].isin(mo_sel))
+        & (df["date"] >= d_from)
+        & (df["date"] <= d_until)
+    ].copy()
+    if hide_labeled:
+        view = view[~view["image_id"].isin(labeled)]
 
     st.sidebar.caption(
-        f"{len(view)} of {len(df)} scenes · {len(labeled)} labeled")
+        f"{len(view)} of {len(df)} scenes between {d_from} and {d_until} · "
+        f"{len(labeled)} labeled")
 
     # Build compact human-readable labels for the radio list.
     def _row_label(r):

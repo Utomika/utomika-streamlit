@@ -11,16 +11,18 @@ Secrets:       see .streamlit/secrets.toml.example
 import streamlit as st
 
 from components.export import render_export
+from components.geotiff_export import render_geotiff_download
 from components.labeling import label_controls
 from components.login import login_gate
 from components.map_view import render_live_cloud_stats, render_progressive_map
 from components.sidebar import render_sidebar
 from components.weather_panel import weather_panel
-from config import CITIES
+from config import CITIES, LOGO_FULL, LOGO_ICON
 import resources
 
 
-st.set_page_config(page_title="UTOMIKA cloud labeling", layout="wide")
+st.set_page_config(
+    page_title="UTOMIKA cloud labeling", page_icon=LOGO_ICON, layout="wide")
 
 
 # --------------------------------------------------------------------------
@@ -36,6 +38,8 @@ def _fatal(title, err, hint):
 def main():
     if not login_gate():
         st.stop()
+
+    st.sidebar.image(LOGO_FULL, width=200)
 
     try:
         resources.init_ee()
@@ -55,10 +59,11 @@ def main():
         _fatal("Supabase connection failed.", e,
                "Check `SUPABASE_URL` and `SUPABASE_KEY` in your secrets.")
 
-    # Switching city rebuilds the whole catalog, so a page/date carried over from
-    # the previous city would be meaningless — reset them.
+    # Switching city rebuilds the whole catalog, so a page/date range carried over
+    # from the previous city would be meaningless — reset them (the date range
+    # then falls back to the new city's full span).
     def _on_city_change():
-        for k in ("scene_page", "active_date", "scene_radio"):
+        for k in ("scene_page", "date_from", "date_until", "scene_radio"):
             st.session_state.pop(k, None)
 
     city_name = st.sidebar.selectbox(
@@ -106,6 +111,7 @@ def main():
 
     with right:
         render_live_cloud_stats(city, row)
+        render_geotiff_download(city, row)
         st.divider()
         label_controls(client, city, row, view, labeled)
 
