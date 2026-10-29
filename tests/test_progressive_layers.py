@@ -12,6 +12,7 @@ for name in ("ee", "supabase"):
         module = types.ModuleType(name)
         if name == "supabase":
             module.create_client = MagicMock()
+            module.ClientOptions = MagicMock()
         sys.modules[name] = module
 
 from components import map_view

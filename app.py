@@ -35,6 +35,17 @@ def _fatal(title, err, hint):
     st.stop()
 
 
+def _labels_down_notice(err):
+    st.sidebar.warning(
+        "Labeling server is unreachable. Scenes and maps still work, but labels "
+        "can't be shown or saved right now."
+    )
+    st.sidebar.expander("Technical detail").code(f"{type(err).__name__}: {err}")
+    if st.sidebar.button("Retry now"):
+        resources.reset_labels_down()
+        st.rerun()
+
+
 def main():
     if not login_gate():
         st.stop()
@@ -53,12 +64,6 @@ def main():
             "from unescaped newlines in `private_key`. Also confirm `GEE_PROJECT`.",
         )
 
-    try:
-        client = resources.get_supabase()
-    except Exception as e:  # noqa: BLE001
-        _fatal("Supabase connection failed.", e,
-               "Check `SUPABASE_URL` and `SUPABASE_KEY` in your secrets.")
-
     # Switching city rebuilds the whole catalog, so a page/date range carried over
     # from the previous city would be meaningless — reset them (the date range
     # then falls back to the new city's full span).
@@ -71,19 +76,13 @@ def main():
     city = CITIES[city_name]
 
     df = resources.load_catalog(city)
-    try:
-        labeled = dict(resources.get_labeled(city, st.session_state["labeler"]))
-    except Exception as e:  # noqa: BLE001
-        _fatal(
-            "Couldn't reach Supabase.",
-            e,
-            "The URL didn't resolve or the query failed. Verify `SUPABASE_URL` "
-            "is your exact project URL (no typo, host resolves), you have "
-            "network access, and the `labels` table exists (run "
-            "`supabase_schema.sql` in the SQL editor).",
-        )
+    labeled, labels_err = resources.load_labels(city, st.session_state["labeler"])
+    labels_ok = labels_err is None
+    if not labels_ok:
+        _labels_down_notice(labels_err)
+    client = resources.get_supabase() if labels_ok else None
 
-    view, active_id = render_sidebar(df, labeled)
+    view, active_id = render_sidebar(df, labeled, labels_ok)
     if active_id is None:
         st.info("Adjust the filters to see scenes.")
         return
@@ -122,10 +121,14 @@ def main():
         render_live_cloud_stats(city, row)
         render_geotiff_download(city, row)
         st.divider()
-        label_controls(client, city, row, view, labeled)
+        if labels_ok:
+            label_controls(client, city, row, view, labeled)
+        else:
+            st.info("Labeling unavailable — server is down.")
 
     # Export
-    render_export(client, st.session_state["labeler"])
+    if labels_ok:
+        render_export(client, st.session_state["labeler"])
 
 
 if __name__ == "__main__":

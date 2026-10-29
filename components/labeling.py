@@ -45,18 +45,23 @@ def label_controls(client, city, row, view, labeled):
         clicked = "unsure"
 
     if clicked:
-        db.upsert_label(
-            client,
-            city=city,
-            image_date=row["date"],
-            image_id=row["image_id"],
-            sat=row["sat"],
-            scene_cloud_cover=row["scene_cloud_cover"],
-            roi_cloud_pct=row["roi_cloud_pct"],
-            label=clicked,
-            labeler=st.session_state["labeler"],
-            notes=notes,
-        )
+        try:
+            db.upsert_label(
+                client,
+                city=city,
+                image_date=row["date"],
+                image_id=row["image_id"],
+                sat=row["sat"],
+                scene_cloud_cover=row["scene_cloud_cover"],
+                roi_cloud_pct=row["roi_cloud_pct"],
+                label=clicked,
+                labeler=st.session_state["labeler"],
+                notes=notes,
+            )
+        except Exception as e:  # noqa: BLE001
+            st.error("Couldn't save the label — labeling server is unreachable.")
+            resources.mark_labels_down(e)
+            return
         st.toast(f"Saved: {LABEL_EMOJI[clicked]}", icon="✅")
         # Update local cache so the ✓ shows immediately, then advance.
         labeled[row["image_id"]] = clicked

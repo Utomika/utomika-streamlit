@@ -15,12 +15,12 @@ server-side only — the key never reaches the browser. Never expose it in a
 client-side app.
 """
 
-from supabase import create_client
+from supabase import ClientOptions, create_client
 
 
 def get_client(url, key):
     """Create a Supabase client. Cache the result in the caller (st.cache_resource)."""
-    return create_client(url, key)
+    return create_client(url, key, options=ClientOptions(postgrest_client_timeout=5))
 
 
 def get_labeled_ids(client, city, labeler=None):

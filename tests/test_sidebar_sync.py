@@ -17,6 +17,7 @@ if "ee" not in sys.modules and importlib.util.find_spec("ee") is None:
 if "supabase" not in sys.modules and importlib.util.find_spec("supabase") is None:
     supabase = types.ModuleType("supabase")
     supabase.create_client = MagicMock()
+    supabase.ClientOptions = MagicMock()
     sys.modules["supabase"] = supabase
 
 from components import sidebar

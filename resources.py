@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import urllib.request
 from urllib.parse import urlparse
 
@@ -236,6 +237,33 @@ def fetch_scene_cloud_stats(city, image_id, sat, tier):
 def get_labeled(city, labeler):
     """Cached label lookup for the sidebar ✓ markers (short TTL: it changes)."""
     return db.get_labeled_ids(get_supabase(), city, labeler=labeler)
+
+
+LABELS_RETRY_SECONDS = 60
+
+
+def mark_labels_down(err):
+    """Back off label requests for this session after a read or write failure."""
+    st.session_state["labels_down_until"] = time.time() + LABELS_RETRY_SECONDS
+    st.session_state["labels_error"] = err
+
+
+def reset_labels_down():
+    """Allow an immediate retry, including a fresh lookup of label state."""
+    st.session_state.pop("labels_down_until", None)
+    st.session_state.pop("labels_error", None)
+    get_labeled.clear()
+
+
+def load_labels(city, labeler) -> tuple[dict, Exception | None]:
+    """Load optional labels without blocking scene browsing during an outage."""
+    if st.session_state.get("labels_down_until", 0) > time.time():
+        return {}, st.session_state["labels_error"]
+    try:
+        return dict(get_labeled(city, labeler)), None
+    except Exception as e:  # noqa: BLE001
+        mark_labels_down(e)
+        return {}, e
 
 
 def export_df(client, labeler):

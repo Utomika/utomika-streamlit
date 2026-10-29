@@ -101,7 +101,7 @@ def _init_filter_state(date_min, date_max, years):
     ss["date_until"] = d_until
 
 
-def render_sidebar(df, labeled):
+def render_sidebar(df, labeled, labels_ok=True):
     st.sidebar.header("Catalog")
     st.sidebar.write(f"Labeler: **{st.session_state['labeler']}**")
     if st.sidebar.button("Log out"):
@@ -163,7 +163,8 @@ def render_sidebar(df, labeled):
         "Months", months, default=months,
         format_func=lambda m: calendar.month_abbr[m], key="month_filter")
     hide_labeled = st.sidebar.checkbox(
-        "Hide already-labeled", value=False, key="hide_labeled")
+        "Hide already-labeled", value=False, key="hide_labeled",
+        disabled=not labels_ok)
 
     # NaN roi_cloud_pct (scenes with no valid pixels) must stay visible, not
     # be silently dropped by the `<=` comparison (NaN <= x is always False).
@@ -178,12 +179,13 @@ def render_sidebar(df, labeled):
         & (df["date"] >= d_from)
         & (df["date"] <= d_until)
     ].copy()
-    if hide_labeled:
+    if labels_ok and hide_labeled:
         view = view[~view["image_id"].isin(labeled)]
 
+    label_status = f"{len(labeled)} labeled" if labels_ok else "labels unavailable"
     st.sidebar.caption(
         f"{len(view)} of {len(df)} scenes between {d_from} and {d_until} · "
-        f"{len(labeled)} labeled")
+        f"{label_status}")
 
     # Build compact human-readable labels for the radio list.
     def _row_label(r):
