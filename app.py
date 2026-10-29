@@ -90,6 +90,15 @@ def main():
 
     row = df[df["image_id"] == active_id].iloc[0]
 
+    # Adjacent scenes in the filtered/date-sorted list, including page edges.
+    scene_ids = view["image_id"].tolist()
+    position = scene_ids.index(active_id)
+    neighbor_ids = scene_ids[max(0, position - 1):position] + scene_ids[position + 1:position + 2]
+    neighbors = tuple(
+        (city, str(scene["image_id"]), str(scene["sat"]), str(scene["tier"]))
+        for _, scene in df.set_index("image_id", drop=False).loc[neighbor_ids].iterrows()
+    )
+
     st.subheader(f"{city_name} — {row['date']} · {row['sat']}")
 
     weather_panel(city, active_id, row["date"])
@@ -103,7 +112,7 @@ def main():
     left, right = st.columns([3, 1])
     try:
         with left:
-            render_progressive_map(city, row)
+            render_progressive_map(city, row, neighbors)
     except Exception as e:  # noqa: BLE001
         with left:
             st.error(f"Could not load this scene from Earth Engine:\n\n{e}")

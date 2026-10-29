@@ -1,0 +1,17 @@
+html, body { margin: 0; font: 14px system-ui, sans-serif; color: #202b35; }
+#map { height: 560px; width: 100%; border-radius: 6px; }
+#status { min-height: 22px; padding: 6px 2px; line-height: 1.5; }
+.scene-layers { padding: 10px 12px; background: white; border-radius: 5px;
+  box-shadow: 0 1px 5px #0005; max-width: 260px; }
+.scene-layers label { display: flex; gap: 6px; align-items: center; margin: 5px 0; }
+.scene-layers input[type="checkbox"] { accent-color: #287a53; }
+.scene-layers small { color: #596575; margin-left: auto; padding-left: 8px; }
+.scene-layers small.failed { color: #a4262c; }
+.scene-layers button { margin-left: 6px; cursor: pointer; }
+.scene-layers input[type="range"] { width: 95px; }
+.scene-divider { border-top: 1px solid #ddd; margin: 8px 0; }
+.export-control { width: 32px; height: 32px; background: white; border: 0;
+  border-radius: 3px; font-size: 18px; cursor: pointer; }
+@media (max-width: 480px) {
+  .scene-layers { font-size: 12px; max-width: 210px; padding: 6px 8px; }
+}

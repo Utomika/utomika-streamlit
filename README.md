@@ -21,8 +21,12 @@ each).
   marks scenes you've labeled.
 - **Main panel** — an interactive map of the selected overpass with toggleable
   **True color**, **Cloud/shadow mask**, **NDVI**, **LST (°C)**, and **ECI**
-  layers (live GEE tiles), plus the ROI cloud numbers for cross-checking. True
-  color renders first; the remaining layers become available progressively.
+  layers (live GEE tiles), plus the ROI cloud numbers for cross-checking. Layers
+  prepare in background workers without resetting the map. Your last selected
+  layer loads first when changing dates; zoom, position, cloud opacity, and layer
+  visibility persist. Recent layers are cached for 30 minutes, and visible layers
+  for the two adjacent filtered scenes are prepared at low priority. Failed
+  layers can be retried individually from the map menu.
 - **Historical station weather** — a compact strip above the scene metrics and
   map with daily mean air temperature, precipitation, and wind observations at
   07:00, 14:00, and 21:00. Choose 7, 14, 21, 28, or 35 days before the selected
@@ -44,6 +48,7 @@ each).
 app.py               Streamlit UI (login, sidebar list, map, label buttons)
 components/          UI pieces: login, sidebar filters, map, labeling, weather,
                      GeoTIFF + CSV export
+scene_loader.py      Bounded background requests and per-session scene cache
 weather.py           Cached station data, windowing, and Altair chart
 gee_app.py           EE glue: service-account auth, GeoJSON ROI, exact-scene
                      loader, NDVI/ECI, tile-layer URLs
@@ -142,8 +147,13 @@ They use the identical dissolve + 50 m simplify + WGS84 logic as
 - **ECI normalization** is min–max over the ROI **per scene** (same as the
   original `eci_lst_scirpt.js`), so ECI values are only comparable *within* a
   scene — fine for visual review.
-- **Map framework:** plain `folium` + `streamlit-folium` over GEE `getMapId`
-  tile URLs (no geemap/geopandas), keeping the Streamlit Cloud build light.
+- **Map framework:** a keyed Streamlit component with Leaflet 1.9.4 over GEE
+  `getMapId` tile URLs (no folium/geemap/geopandas or frontend build step).
+  Layer updates leave unchanged tile elements in place. Leaflet and the lazy PNG
+  capture library load from jsDelivr. Scene URL/statistics caches are bounded to
+  80 results per session, with at most four running requests; obsolete queued
+  requests are replaced when navigating. Already running requests may finish,
+  and their results remain associated with their original scene.
 - **Weather coverage:** the bundled station observations run from 1991-01-01
   through 2024-12-31. Split uses Marjan; Zagreb defaults to Grič and can switch
   to Maksimir or Pleso. The history selector defaults to seven days before the
@@ -152,6 +162,14 @@ They use the identical dissolve + 50 m simplify + WGS84 logic as
   in its tooltip. Temperature and 24-hour precipitation records carry the
   source's 21:00 timestamp; they are not instantaneous 21:00 air-temperature
   readings. Missing precipitation stays missing and is never converted to zero.
-- **Rerun jank:** Streamlit reruns the whole script per interaction, so the map
-  can feel slightly janky; weather controls are isolated in a fragment so they
-  update without rebuilding the Folium/GEE map.
+- **Map updates:** short fragment polls collect completed background work.
+  The persistent map retains its view during polls and scene changes; changing
+  cities recenters it. Live cloud statistics also load in the background. URL
+  preparation and visible browser tile loading are reported separately.
+
+## Verification
+
+Run `python -m pytest -q` for the Python tests. The optional browser check,
+`node tests/test_scene_map_browser.cjs`, requires Playwright and Chromium. It
+uses synthetic PNG tiles to verify map persistence, layer selection across
+dates, cloud opacity, retries, and PNG export without service credentials.

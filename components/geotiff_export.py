@@ -7,7 +7,7 @@ import resources
 # GeoTIFF download of the selected scene
 # --------------------------------------------------------------------------
 # Display name -> layer key understood by resources.scene_geotiff. Names match
-# the map's layer menu (map_view._OPTIONAL_LAYERS).
+# the map's layer menu (scene_loader.LAYERS).
 _LAYERS = {
     "true_color": "True color",
     "cloud": "Cloud / shadow mask",

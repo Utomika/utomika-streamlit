@@ -2,203 +2,238 @@ import importlib.util
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, call, patch
+from concurrent.futures import Future
+from threading import Event
+from unittest.mock import MagicMock, patch
 
 
-# The project's production dependencies are installed by requirements.txt, but
-# the lightweight unit-test environment used in this repository only includes
-# Streamlit. Stub rendering/service modules so the pure orchestration logic can
-# still be exercised without Earth Engine credentials or a browser component.
-if importlib.util.find_spec("folium") is None:
-    folium = types.ModuleType("folium")
-    folium.Map = MagicMock
-    folium.TileLayer = MagicMock
-    folium.GeoJson = MagicMock
-    folium.LayerControl = MagicMock
-    sys.modules["folium"] = folium
-
-if importlib.util.find_spec("branca") is None:
-    branca = types.ModuleType("branca")
-    branca_element = types.ModuleType("branca.element")
-    branca_element.MacroElement = object
-    branca.element = branca_element
-    sys.modules["branca"] = branca
-    sys.modules["branca.element"] = branca_element
-
-if importlib.util.find_spec("streamlit_folium") is None:
-    streamlit_folium = types.ModuleType("streamlit_folium")
-    streamlit_folium.st_folium = MagicMock()
-    sys.modules["streamlit_folium"] = streamlit_folium
-
-if importlib.util.find_spec("ee") is None:
-    sys.modules["ee"] = types.ModuleType("ee")
-
-if importlib.util.find_spec("supabase") is None:
-    supabase = types.ModuleType("supabase")
-    supabase.create_client = MagicMock()
-    sys.modules["supabase"] = supabase
+for name in ("ee", "supabase"):
+    if name not in sys.modules and importlib.util.find_spec(name) is None:
+        module = types.ModuleType(name)
+        if name == "supabase":
+            module.create_client = MagicMock()
+        sys.modules[name] = module
 
 from components import map_view
 import resources
+from scene_loader import SceneLoader
 
 
-class ProgressiveLayerTestCase(unittest.TestCase):
+SCENE_A = ("zagreb", "scene-a", "L8", "T1")
+SCENE_B = ("zagreb", "scene-b", "L8", "T1")
+
+
+class ControlledPool:
+    """Control network completion order without sleeps or actual services."""
+
+    def __init__(self, **kwargs):
+        self.requests = []
+
+    def submit(self, fetcher, *args):
+        future = Future()
+        self.requests.append((fetcher, args, future))
+        return future
+
+    def finish(self, index, value="tile-url", error=None):
+        future = self.requests[index][2]
+        if error:
+            future.set_exception(error)
+        else:
+            future.set_result(value)
+
+    def shutdown(self, **kwargs):
+        pass
+
+
+class BackgroundLoaderTestCase(unittest.TestCase):
     def setUp(self):
-        self.anchor = ("zagreb", "scene-1", "L8", "T1")
-        self.row = {
-            "image_id": "scene-1",
-            "sat": "L8",
-            "tier": "T1",
-            "roi_cloud_pct": 12.3,
-        }
+        self.now = 0
+        patcher = patch("scene_loader.ThreadPoolExecutor", ControlledPool)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.loader = SceneLoader(MagicMock(), MagicMock(), max_workers=1,
+                                  ttl=30, clock=lambda: self.now)
+        self.pool = self.loader._pool
+        self.addCleanup(self.loader.close)
 
-    def test_first_pass_requests_only_true_color(self):
-        state = map_view._new_layer_state(self.anchor)
-        with (
-            patch.object(map_view, "_layer_state", return_value=state),
-            patch.object(map_view, "_loading_scene_map") as loading_fragment,
-            patch.object(
-                map_view.resources, "scene_tile", return_value="true-url"
-            ) as scene_tile,
-        ):
-            map_view.render_progressive_map("zagreb", self.row)
+    def test_selected_ndvi_is_first_even_with_true_color_visible(self):
+        self.loader.activate(SCENE_A, ["true_color", "ndvi", "cloud"], "ndvi")
+        self.assertEqual(self.pool.requests[0][1], (*SCENE_A, "ndvi"))
+        self.assertEqual(self.loader.snapshot(SCENE_A), {})
 
-        scene_tile.assert_called_once_with(
-            "zagreb", "scene-1", "L8", "T1", "true_color"
-        )
-        self.assertEqual(state["tiles"], {"True color": "true-url"})
-        self.assertEqual(state["next_index"], 0)
-        loading_fragment.assert_called_once_with(
-            "zagreb", "scene-1", "L8", "T1"
-        )
+    def test_newest_scene_replaces_queued_work_and_late_results_are_isolated(self):
+        self.loader.activate(SCENE_A)
+        self.loader.activate(SCENE_B, ["ndvi"], "ndvi")
+        self.pool.finish(0, "a-true")
+        self.assertEqual(self.pool.requests[1][1], (*SCENE_B, "ndvi"))
+        self.assertEqual(self.loader.snapshot(SCENE_B), {})
+        self.assertEqual(self.loader.snapshot(SCENE_A)["true_color"]["value"], "a-true")
+        self.pool.finish(1, "b-ndvi")
+        self.assertEqual(self.loader.snapshot(SCENE_B)["ndvi"]["value"], "b-ndvi")
 
-    def test_optional_layers_advance_in_order_and_skip_a_failure(self):
-        state = map_view._new_layer_state(self.anchor)
-        state["tiles"]["True color"] = "true-url"
-        results = [
-            "cloud-url",
-            RuntimeError("NDVI unavailable"),
-            "lst-url",
-            "eci-url",
-        ]
+    def test_polls_reuse_inflight_and_completed_layers(self):
+        self.loader.activate(SCENE_A)
+        self.loader.activate(SCENE_A)
+        self.assertEqual(len(self.pool.requests), 1)
+        self.pool.finish(0)
+        self.loader.activate(SCENE_A)
+        self.assertEqual(len(self.pool.requests), 2)  # cloud, not true color again
+        self.assertEqual(self.pool.requests[1][1][-1], "cloud")
 
-        with patch.object(
-            map_view.resources, "scene_tile", side_effect=results
-        ) as scene_tile:
-            for _ in map_view._OPTIONAL_LAYERS:
-                map_view._advance_optional_layer(
-                    state, "zagreb", "scene-1", "L8", "T1"
-                )
+    def test_revisit_reuses_cached_ndvi_without_loading_other_layers_first(self):
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi")
+        self.pool.finish(0, "a-ndvi")
+        self.loader.activate(SCENE_B, ["ndvi"], "ndvi")
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi")
+        self.assertEqual(self.loader.snapshot(SCENE_A)["ndvi"]["value"], "a-ndvi")
+        self.assertEqual(sum(args == (*SCENE_A, "ndvi")
+                             for _, args, _ in self.pool.requests), 1)
 
-        self.assertEqual(
-            scene_tile.call_args_list,
-            [
-                call("zagreb", "scene-1", "L8", "T1", "cloud"),
-                call("zagreb", "scene-1", "L8", "T1", "ndvi"),
-                call("zagreb", "scene-1", "L8", "T1", "lst"),
-                call("zagreb", "scene-1", "L8", "T1", "eci"),
-            ],
-        )
-        self.assertEqual(
-            list(state["tiles"]),
-            ["True color", "Cloud / shadow mask", "LST (°C)", "ECI"],
-        )
-        self.assertIn("NDVI unavailable", state["errors"]["NDVI"])
-        self.assertEqual(state["next_index"], len(map_view._OPTIONAL_LAYERS))
+    def test_each_url_expires_from_its_own_completion_time(self):
+        self.loader.activate(SCENE_A)
+        self.now = 10
+        self.pool.finish(0, "true")
+        self.now = 20
+        self.pool.finish(1, "cloud")
+        self.now = 41
+        snapshot = self.loader.snapshot(SCENE_A)
+        self.assertNotIn("true_color", snapshot)
+        self.assertIn("cloud", snapshot)
+        self.loader.activate(SCENE_A)
+        self.pool.finish(2)
+        self.assertEqual(self.pool.requests[3][1][-1], "true_color")
 
-    def test_true_color_failure_is_not_swallowed(self):
-        state = map_view._new_layer_state(self.anchor)
-        with (
-            patch.object(map_view, "_layer_state", return_value=state),
-            patch.object(map_view, "_loading_scene_map"),
-            patch.object(
-                map_view.resources,
-                "scene_tile",
-                side_effect=RuntimeError("base unavailable"),
-            ),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "base unavailable"):
-                map_view.render_progressive_map("zagreb", self.row)
+    def test_failed_layer_does_not_repeat_until_retry(self):
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi")
+        self.pool.finish(0, error=RuntimeError("unavailable"))
+        self.assertIn("unavailable", self.loader.snapshot(SCENE_A)["ndvi"]["error"])
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi")
+        self.assertEqual(len(self.pool.requests), 2)
+        self.loader.retry(SCENE_A, "ndvi")
+        self.pool.finish(1)
+        self.assertEqual(self.pool.requests[2][1], (*SCENE_A, "ndvi"))
 
-    def test_scene_change_resets_progress(self):
-        session_state = {}
-        with patch.object(map_view.st, "session_state", session_state):
-            first = map_view._layer_state("zagreb", "scene-1", "L8", "T1")
-            first["tiles"]["True color"] = "true-url"
-            first["next_index"] = 2
+    def test_prefetch_uses_only_visible_layers_of_filtered_neighbors(self):
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi", (SCENE_B,))
+        self.assertNotIn((SCENE_B, "ndvi"), self.loader._wanted)
+        self.pool.finish(0)
+        self.loader.activate(SCENE_A, ["ndvi"], "ndvi", (SCENE_B,))
+        self.assertIn((SCENE_B, "ndvi"), self.loader._wanted)
+        self.assertNotIn((SCENE_B, "lst"), self.loader._wanted)
+        self.assertEqual(self.loader._wanted[-1], (SCENE_B, "ndvi"))
 
-            same = map_view._layer_state("zagreb", "scene-1", "L8", "T1")
-            changed = map_view._layer_state("zagreb", "scene-2", "L8", "T1")
+    def test_cache_is_bounded_and_close_stops_followup_work(self):
+        self.loader._max_entries = 2
+        self.loader.activate(SCENE_A)
+        for index in range(3):
+            self.pool.finish(index)
+        self.assertLessEqual(len(self.loader._cache), 2)
+        count = len(self.pool.requests)
+        self.loader.close()
+        self.pool.finish(count - 1)
+        self.assertEqual(len(self.pool.requests), count)
 
-        self.assertIs(same, first)
-        self.assertIsNot(changed, first)
-        self.assertEqual(changed["tiles"], {})
-        self.assertEqual(changed["next_index"], 0)
 
-    def test_analytical_layers_are_added_hidden(self):
-        layer_instances = []
+class RealWorkerTestCase(unittest.TestCase):
+    def test_activate_and_poll_return_while_network_is_blocked(self):
+        entered, release = Event(), Event()
 
-        def tile_layer(*args, **kwargs):
-            instance = MagicMock()
-            instance.args = args
-            instance.kwargs = kwargs
-            layer_instances.append(instance)
-            return instance
+        def fetch(*args):
+            entered.set()
+            release.wait(5)
+            return "url"
 
-        tiles = {
-            "True color": "true-url",
-            "Cloud / shadow mask": "cloud-url",
-            "NDVI": "ndvi-url",
-            "LST (°C)": "lst-url",
-            "ECI": "eci-url",
-        }
-        with (
-            patch.object(map_view.resources, "roi_view", return_value=([0, 0], {})),
-            patch.object(map_view.folium, "Map", return_value=MagicMock()),
-            patch.object(map_view.folium, "TileLayer", side_effect=tile_layer),
-            patch.object(map_view.folium, "GeoJson", return_value=MagicMock()),
-            patch.object(map_view.folium, "LayerControl", return_value=MagicMock()),
-            patch.object(map_view, "add_png_export"),
-            patch.object(map_view, "st_folium"),
-        ):
-            map_view.render_map("zagreb", self.row, tiles, "test-map")
+        loader = SceneLoader(fetch, fetch, max_workers=1)
+        try:
+            loader.activate(SCENE_A)
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(loader.snapshot(SCENE_A), {})
+            loader.activate(SCENE_B, ["ndvi"], "ndvi")
+            self.assertEqual(loader.snapshot(SCENE_B), {})
+        finally:
+            loader.close()
+            release.set()
 
-        overlays = {
-            layer.kwargs["name"]: layer.kwargs
-            for layer in layer_instances
-            if "name" in layer.kwargs
-        }
-        self.assertTrue(overlays["True color"]["show"])
-        self.assertTrue(overlays["Cloud / shadow mask"]["show"])
-        self.assertFalse(overlays["NDVI"]["show"])
-        self.assertFalse(overlays["LST (°C)"]["show"])
-        self.assertFalse(overlays["ECI"]["show"])
-        self.assertEqual(overlays["Cloud / shadow mask"]["opacity"], 0.55)
 
-    def test_live_stats_failure_is_non_fatal(self):
-        state = map_view._new_stats_state(self.anchor)
-        with patch.object(
-            map_view.resources,
-            "scene_cloud_stats",
-            side_effect=RuntimeError("stats unavailable"),
-        ):
-            map_view._fetch_cloud_stats(
-                state, "zagreb", "scene-1", "L8", "T1"
-            )
+class MapStateTestCase(unittest.TestCase):
+    def setUp(self):
+        self.state = {}
+        patcher = patch.object(map_view.st, "session_state", self.state)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-        self.assertTrue(state["done"])
-        self.assertIsNone(state["numbers"])
-        self.assertIn("stats unavailable", state["error"])
+    def test_selection_survives_new_scene_payload_and_ignores_stale_retry(self):
+        loader = MagicMock()
+        self.state.update({map_view._ACTIVE_KEY: SCENE_B,
+                           map_view._LOADER_KEY: loader,
+                           map_view._COMPONENT_KEY: {
+                               "event_id": "choice-1", "scene_id": map_view._scene_id(SCENE_A),
+                               "visible": ["ndvi", "cloud"], "preferred": "ndvi",
+                               "cloud_opacity": 0.35, "retry": "ndvi", "boundary": False,
+                           }})
+        map_view._on_map_change()
+        payload = map_view._map_payload(SCENE_B, {})
+        self.assertEqual(payload["preferences"]["visible"], ["ndvi", "cloud"])
+        self.assertEqual(payload["preferences"]["preferred"], "ndvi")
+        self.assertEqual(payload["preferences"]["cloud_opacity"], 0.35)
+        self.assertFalse(payload["preferences"]["boundary"])
+        self.assertTrue(all(layer["url"] is None for layer in payload["layers"]))
+        loader.retry.assert_not_called()
+
+    def test_current_retry_is_processed_once(self):
+        loader = MagicMock()
+        self.state.update({map_view._ACTIVE_KEY: SCENE_A,
+                           map_view._LOADER_KEY: loader,
+                           map_view._COMPONENT_KEY: {
+                               "event_id": "retry-1", "scene_id": map_view._scene_id(SCENE_A),
+                               "retry": "ndvi",
+                           }})
+        map_view._on_map_change()
+        map_view._on_map_change()
+        loader.retry.assert_called_once_with(SCENE_A, "ndvi")
+
+    def test_render_uses_same_component_key_for_loading_and_new_scene(self):
+        loader = MagicMock()
+        loader.snapshot.return_value = {}
+        self.state[map_view._LOADER_KEY] = loader
+        with (patch.object(map_view, "_scene_map") as component,
+              patch.object(map_view.resources, "roi_view", return_value=([0, 0], {})),
+              patch.object(map_view.st, "caption")):
+            for scene in (SCENE_A, SCENE_B):
+                with patch.object(map_view, "_render_scene_map"):
+                    map_view.render_progressive_map(scene[0], {
+                        "image_id": scene[1], "sat": scene[2], "tier": scene[3],
+                    })
+                map_view._render_scene_map.__wrapped__()
+        self.assertEqual([call.kwargs["key"] for call in component.call_args_list],
+                         [map_view._COMPONENT_KEY] * 2)
+        self.assertEqual([call.args[0] for call in loader.activate.call_args_list],
+                         [SCENE_A, SCENE_B])
+        self.assertEqual(self.state[map_view._ACTIVE_KEY], SCENE_B)
+
+    def test_cloud_stats_timer_reads_latest_request_without_blocking(self):
+        loader = MagicMock()
+        loader.snapshot.return_value = {"stats": {"error": None, "value": {
+            "roi_cloud_pct": 12, "roi_cloud_of_valid_pct": 15, "roi_valid_pct": 80,
+        }}}
+        self.state[map_view._LOADER_KEY] = loader
+        with (patch.object(map_view.st, "markdown"), patch.object(map_view.st, "write"),
+              patch.object(map_view.st, "caption") as caption):
+            for scene, pct in ((SCENE_A, 12.3), (SCENE_B, 45.6)):
+                with patch.object(map_view, "_render_live_cloud_stats"):
+                    map_view.render_live_cloud_stats(scene[0], {
+                        "image_id": scene[1], "sat": scene[2], "tier": scene[3],
+                        "roi_cloud_pct": pct,
+                    })
+                map_view._render_live_cloud_stats.__wrapped__()
+        self.assertEqual([call.args[0] for call in loader.snapshot.call_args_list],
+                         [SCENE_A, SCENE_B])
+        self.assertIn("45.6%", caption.call_args.args[0])
 
 
 class SceneResourceTestCase(unittest.TestCase):
     def test_visualizer_builds_only_the_requested_layer(self):
-        image = MagicMock()
-        roi = MagicMock()
-        visualized = MagicMock()
-        ndvi = MagicMock()
-        ndvi.visualize.return_value = visualized
-
+        image, roi, ndvi = MagicMock(), MagicMock(), MagicMock()
         with (
             patch.object(resources.gee_app, "ndvi", return_value=ndvi) as build_ndvi,
             patch.object(resources.gc, "true_color") as build_true_color,
@@ -206,13 +241,27 @@ class SceneResourceTestCase(unittest.TestCase):
             patch.object(resources.gee_app, "eci") as build_eci,
         ):
             result = resources._visualized_scene_layer(image, roi, "ndvi")
-
-        self.assertIs(result, visualized)
+        self.assertIs(result, ndvi.visualize.return_value)
         build_ndvi.assert_called_once_with(image)
-        ndvi.visualize.assert_called_once_with(**resources.gee_app.VIS["ndvi"])
         build_true_color.assert_not_called()
         build_lst.assert_not_called()
         build_eci.assert_not_called()
+
+    def test_worker_does_not_use_streamlit_roi_cache(self):
+        with (patch.object(resources, "roi", side_effect=AssertionError("Streamlit in worker")),
+              patch.object(resources.gee_app, "load_roi_geojson"),
+              patch.object(resources.gee_app, "load_scene"),
+              patch.object(resources, "_visualized_scene_layer"),
+              patch.object(resources.gee_app, "tile_layer_url", return_value="ndvi-url")):
+            self.assertEqual(resources.fetch_scene_tile(*SCENE_A, "ndvi"), "ndvi-url")
+
+    def test_region_view_uses_local_boundary_without_earth_engine(self):
+        with patch.object(resources, "roi", side_effect=AssertionError("Earth Engine request")):
+            for city in ("zagreb", "split"):
+                center, boundary = resources.roi_view.__wrapped__(city)
+                self.assertEqual(len(center), 2)
+                self.assertTrue(40 < center[0] < 50)
+                self.assertIn(boundary["type"], ("Polygon", "MultiPolygon"))
 
     def test_unknown_scene_layer_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown scene layer"):

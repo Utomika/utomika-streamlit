@@ -105,8 +105,13 @@ def render_sidebar(df, labeled):
     st.sidebar.header("Catalog")
     st.sidebar.write(f"Labeler: **{st.session_state['labeler']}**")
     if st.sidebar.button("Log out"):
+        loader = st.session_state.pop("_scene_loader", None)
+        if loader is not None:
+            loader.close()
         for k in ("authed", "labeler", "scene_radio", "pending_scene",
-                  "scene_page", "date_from", "date_until"):
+                  "scene_page", "date_from", "date_until", "_map_preferences",
+                  "_map_last_event", "_active_map_scene", "_persistent_scene_map",
+                  "_map_neighbors", "_cloud_stats_request"):
             st.session_state.pop(k, None)
         st.rerun()
 

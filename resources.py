@@ -1,3 +1,4 @@
+import json
 import os
 import urllib.request
 from urllib.parse import urlparse
@@ -86,15 +87,26 @@ def roi(city):
 
 @st.cache_data(show_spinner=False)
 def roi_view(city):
-    """Map center [lat, lon] + boundary GeoJSON for a city, fetched once.
+    """Read the shipped boundary locally, without any Earth Engine requests."""
+    with open(os.path.join(DATA_DIR, f"{city}.geojson")) as source:
+        boundary = json.load(source)
+    geometry = boundary
+    if geometry["type"] == "FeatureCollection":
+        geometry = geometry["features"][0]["geometry"]
+    elif geometry["type"] == "Feature":
+        geometry = geometry["geometry"]
 
-    Both come from Earth Engine getInfo() calls, so they are memoized here
-    rather than recomputed on every Streamlit rerun (they only depend on the
-    fixed city geometry).
-    """
-    city_roi = roi(city)
-    lon, lat = city_roi.centroid(maxError=1).coordinates().getInfo()
-    return [lat, lon], city_roi.getInfo()
+    def points(coords):
+        if isinstance(coords[0], (float, int)):
+            yield coords
+        else:
+            for part in coords:
+                yield from points(part)
+
+    coordinates = list(points(geometry["coordinates"]))
+    lon = (min(p[0] for p in coordinates) + max(p[0] for p in coordinates)) / 2
+    lat = (min(p[1] for p in coordinates) + max(p[1] for p in coordinates)) / 2
+    return [lat, lon], geometry
 
 
 SCENE_TILE_TTL_SECONDS = 1800
@@ -120,11 +132,16 @@ def _visualized_scene_layer(img, city_roi, layer):
 
 # GEE getMapId tokens are ephemeral. Cache each URL independently so requesting
 # true color never constructs NDVI/LST/ECI, while a recently revisited layer is
-# still instant. The UI also discards its staged URLs after this same interval.
-@st.cache_data(show_spinner=False, ttl=SCENE_TILE_TTL_SECONDS)
+# still fast. The background loader uses the same expiry for its own URL cache.
+@st.cache_data(show_spinner=False, ttl=SCENE_TILE_TTL_SECONDS, max_entries=80)
 def scene_tile(city, image_id, sat, tier, layer):
     """Return the XYZ URL template for exactly one scene layer."""
-    city_roi = roi(city)
+    return fetch_scene_tile(city, image_id, sat, tier, layer)
+
+
+def fetch_scene_tile(city, image_id, sat, tier, layer):
+    """Uncached worker entry point; must not call Streamlit APIs."""
+    city_roi = gee_app.load_roi_geojson(city)
     img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
     visualized = _visualized_scene_layer(img, city_roi, layer)
     return gee_app.tile_layer_url(visualized, {})
@@ -196,7 +213,12 @@ def scene_geotiff(city, image_id, sat, tier, layer, kind):
 @st.cache_data(show_spinner=False)
 def scene_cloud_stats(city, image_id, sat, tier):
     """Calculate stable live ROI cloud numbers independently of map tiles."""
-    city_roi = roi(city)
+    return fetch_scene_cloud_stats(city, image_id, sat, tier)
+
+
+def fetch_scene_cloud_stats(city, image_id, sat, tier):
+    """Uncached statistics worker, independent of the map's tile requests."""
+    city_roi = gee_app.load_roi_geojson(city)
     img = gee_app.load_scene(image_id, sat=sat, tier=tier, roi=city_roi)
     stats = gc.roi_cloud_stats(img, city_roi).getInfo()
     valid = stats.get("valid") or 0.0
